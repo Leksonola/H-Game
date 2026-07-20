@@ -1,0 +1,309 @@
+# ===========================================================================
+# Docker CI/CD Pipeline - Simple and Working
+# ===========================================================================
+# This workflow automates: testing → building → pushing → deploying
+# It runs automatically when you push code or create version tags
+# ===========================================================================
+
+name: Docker CI/CD
+
+# ===========================================================================
+# WHEN DOES THIS WORKFLOW RUN? (Triggers)
+# ===========================================================================
+# Triggers define when GitHub Actions should start running this workflow
+on:
+  push:
+    # Runs when code is pushed to these branches
+    branches: [ main, develop ]
+    # Also runs when you create version tags (like v1.0.0)
+    tags: [ 'v*' ]
+  pull_request:
+    # Runs when someone creates a pull request to main branch
+    # This lets you test changes before merging
+    branches: [ main ]
+
+# ===========================================================================
+# GLOBAL ENVIRONMENT VARIABLES
+# ===========================================================================
+# These variables are available to ALL jobs in the workflow
+# We define them here so we don't have to repeat them in each job
+env:
+  # Your DockerHub username (stored as GitHub secret for security)
+  # Secrets are encrypted and never shown in logs
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  # Image names - these must match what's in your docker-compose.yml
+  BACKEND_IMAGE: humor-game-backend
+  FRONTEND_IMAGE: humor-game-frontend
+
+# ===========================================================================
+# JOB 1: TEST - Run Tests Before Building
+# ===========================================================================
+# WHY: We test code BEFORE building Docker images to catch errors early
+# This saves time and resources - if tests fail, we don't build
+# HOW: Runs on GitHub's free Ubuntu virtual machine
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest  # GitHub provides free Ubuntu runners
+
+    steps:
+      # Step 1: Get your code from GitHub repository
+      # WHY: GitHub Actions needs your code to run tests
+      # HOW: Downloads your repository to the virtual machine
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Node.js (needed to run npm commands)
+      # WHY: Your backend uses Node.js, so we need it installed
+      # HOW: GitHub Actions installs Node.js version 18 and caches npm packages
+      # Caching makes future runs faster (doesn't re-download packages)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'  # Use Node.js version 18
+          cache: 'npm'  # Cache npm packages for faster installs
+          cache-dependency-path: backend/package-lock.json  # Where to find dependencies
+
+      # Step 3: Install backend dependencies
+      # WHY: Tests need dependencies (like testing libraries) to run
+      # HOW: npm ci installs exact versions from package-lock.json (faster, more reliable than npm install)
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          npm ci
+
+      # Step 4: Run backend tests
+      # WHY: Verify that your backend code works correctly
+      # HOW: Runs the test script defined in backend/package.json
+      # If tests fail, the workflow stops here (saves time)
+      - name: Run backend tests
+        run: |
+          cd backend
+          npm test
+
+      # Step 5: Install frontend dependencies
+      # WHY: Frontend build needs dependencies
+      # HOW: Same as backend - installs from package-lock.json
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      # Step 6: Build frontend (compile source code into production files)
+      # WHY: Frontend needs to be built before putting it in Docker image
+      # HOW: Runs npm run build which creates dist/ directory with optimized files
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+
+  # ===========================================================================
+  # JOB 2: BUILD AND PUSH - Create Docker Images and Push to Registry
+  # ===========================================================================
+  # WHY: We need to build Docker images and push them to DockerHub so they can be deployed
+  # HOW: Only runs if tests passed AND it's a push event (not a pull request)
+  build-and-push:
+    name: Build and Push Images
+    runs-on: ubuntu-latest
+    needs: test  # Wait for test job to finish successfully
+
+    # Only run on push events (not pull requests)
+    # WHY: We don't want to push images for every PR, only for actual code pushes
+    if: github.event_name == 'push'
+
+    steps:
+      # Step 1: Get your code (needed to access Dockerfiles)
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Docker Buildx (advanced Docker builder)
+      # WHY: Buildx allows building for multiple platforms and has better caching
+      # HOW: GitHub Actions sets up Docker Buildx automatically
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Step 3: Login to DockerHub (so we can push images)
+      # WHY: DockerHub requires authentication to push images
+      # HOW: Uses your DockerHub username and access token from GitHub secrets
+      # Access token is safer than password (can be revoked, has limited permissions)
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}  # Access token, not password!
+
+      # Step 4: Determine what tag to use for the images
+      # WHY: Different tags for different scenarios:
+      # - Version tags (v1.0.0) → use the version number
+      # - Main branch → use "latest" (most recent stable)
+      # - Other branches → use branch name (develop, feature-branch, etc.)
+      # HOW: Checks the git reference and sets appropriate tag
+      - name: Determine image tag
+        id: tag  # Give this step an ID so we can use its output later
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # If it's a version tag (v1.0.0), use the tag name
+            TAG="${{ github.ref_name }}"
+          elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
+            # If it's main branch, use "latest"
+            TAG="latest"
+          else
+            # Otherwise, use branch name (develop, feature-branch, etc.)
+            TAG="${{ github.ref_name }}"
+          fi
+          # Save the tag so other steps can use it
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Using tag: ${TAG}"
+
+      # Step 5: Build and push backend Docker image
+      # WHY: Backend needs to be containerized and available on DockerHub for deployment
+      # HOW:
+      # - context: Where to find Dockerfile and source code
+      # - file: Which Dockerfile to use
+      # - push: true means push to DockerHub (false = only build locally)
+      # - tags: What to name the image (yourusername/humor-game-backend:tag)
+      # - cache: Uses GitHub Actions cache to speed up builds (reuses layers)
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend  # Directory containing Dockerfile and source code
+          file: ./backend/Dockerfile  # Which Dockerfile to use
+          push: true  # Push to DockerHub (false = only build, don't push)
+          tags: ${{ env.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:${{ steps.tag.outputs.tag }}
+          # Cache layers for faster builds
+          # WHY: If code didn't change, reuse previous build layers (saves time)
+          cache-from: type=gha  # Get cache from GitHub Actions
+          cache-to: type=gha,mode=max  # Save cache to GitHub Actions
+
+      # Step 6: Build and push frontend Docker image
+      # WHY: Frontend also needs to be containerized and available on DockerHub
+      # HOW: Same as backend - builds from frontend/Dockerfile and pushes to DockerHub
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ env.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # JOB 3: DEPLOY TO PRODUCTION - Deploy to Live Environment
+  # ===========================================================================
+  # WHY: After building and pushing images, we need to deploy them to production
+  # HOW: Only runs when you create a version tag (like v1.0.0)
+  # This ensures only tested, versioned releases go to production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build-and-push  # Wait for images to be built and pushed first
+
+    # Only run on version tags (v1.0.0, v1.2.3, etc.)
+    # WHY: We don't want to deploy every push - only specific versions
+    # This gives you control over what goes to production
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: production  # GitHub environment (can have approval requirements)
+
+    steps:
+      # Step 1: Get your code (needed to access docker-compose files)
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up SSH connection to production server
+      # WHY: We need to connect to your production server to deploy
+      # HOW: Uses SSH private key from GitHub secrets to authenticate
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.PRODUCTION_SSH_KEY }}
+
+      # Step 3: Deploy to production server
+      # WHY: This is where the actual deployment happens
+      # HOW:
+      # 1. Connects to production server via SSH
+      # 2. Pulls new Docker images from DockerHub
+      # 3. Updates docker-compose.yml with new image tags
+      # 4. Deploys using docker-compose (merges docker-compose.yml + docker-compose.prod.yml)
+      # 5. Runs health checks to verify deployment worked
+      # 6. Rolls back if health checks fail
+      - name: Deploy
+        env:
+          # These environment variables come from GitHub secrets
+          PROD_SERVER: ${{ secrets.PRODUCTION_SERVER }}  # Server hostname/IP
+          PROD_USER: ${{ secrets.PRODUCTION_USER }}  # SSH username (e.g., ubuntu, ec2-user)
+          PROD_PATH: ${{ secrets.PRODUCTION_DEPLOY_PATH }}  # Path on server (e.g., /home/ubuntu/app)
+        run: |
+          # Get the version from the tag (v1.0.0 -> 1.0.0)
+          VERSION="${{ github.ref_name }}"
+
+          # Build full image names with DockerHub username
+          BACKEND_IMAGE="${{ env.DOCKERHUB_USERNAME }}/${{ env.BACKEND_IMAGE }}:${VERSION}"
+          FRONTEND_IMAGE="${{ env.DOCKERHUB_USERNAME }}/${{ env.FRONTEND_IMAGE }}:${VERSION}"
+
+          # Connect to production server and run deployment commands
+          ssh ${PROD_USER}@${PROD_SERVER} << EOF
+            set -e  # Exit immediately if any command fails
+
+            cd ${PROD_PATH}  # Go to your application directory
+
+            # Login to DockerHub (needed to pull private images)
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            # Pull new images from DockerHub
+            # WHY: Get the latest versioned images we just built
+            docker pull ${BACKEND_IMAGE}
+            docker pull ${FRONTEND_IMAGE}
+
+            # Update docker-compose.yml with new image tags
+            # WHY: docker-compose.yml currently has old image names (humor-game-backend:v1)
+            # We need to update it to use the new versioned images from DockerHub
+            # HOW: sed replaces the old image names with new ones
+            # -i.bak creates a backup file (for rollback if needed)
+            sed -i.bak "s|image: .*humor-game-backend.*|image: ${BACKEND_IMAGE}|g" docker-compose.yml
+            sed -i.bak "s|image: .*humor-game-frontend.*|image: ${FRONTEND_IMAGE}|g" docker-compose.yml
+
+            # Deploy using both docker-compose files
+            # WHY: docker-compose.yml has service definitions
+            # docker-compose.prod.yml adds production settings (resource limits, logging)
+            # Using both files merges them together
+            # HOW: -f flag specifies which files to use
+            # pull: Downloads the images we just updated
+            # up -d: Starts containers in detached mode (runs in background)
+            docker-compose -f docker-compose.yml -f docker-compose.prod.yml pull backend frontend
+            docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d backend frontend
+
+            # Wait for services to start
+            # WHY: Containers need time to start and become healthy
+            sleep 30
+
+            # Health checks - verify deployment worked
+            # WHY: We need to make sure the services are actually running and responding
+            # HOW:
+            # - Backend: Check /health endpoint
+            # - Frontend: Check if homepage loads
+            # If both pass, deployment is successful
+            # If either fails, rollback to previous version
+            if docker-compose -f docker-compose.yml -f docker-compose.prod.yml exec -T backend wget --spider -q --timeout=5 http://127.0.0.1:3001/health && \
+               docker-compose -f docker-compose.yml -f docker-compose.prod.yml exec -T frontend curl -f http://localhost/ > /dev/null 2>&1; then
+              echo "✅ Deployment successful"
+            else
+              echo "❌ Health check failed, rolling back..."
+              # Restore backup (previous version)
+              mv docker-compose.yml.bak docker-compose.yml
+              # Restart with previous version
+              docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+              exit 1  # Exit with error so GitHub Actions knows deployment failed
+            fi
+          EOF
+
+# ===========================================================================
+# WORKFLOW SUMMARY - How It All Works Together
+# ===========================================================================
+# 1. Developer pushes code or creates version tag → Triggers workflow
+# 2. Test job runs → Verifies code works (if tests fail, workflow stops)
+# 3. Build job runs → Creates Docker images, pushes to DockerHub
+# 4. Deploy job runs → Deploys to production server (only on version tags)
+#
+# If any job fails, workflow stops (prevents bad code from deploying)
+# ===========================================================================
