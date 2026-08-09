@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: backend
+  namespace: h-game
+  labels:
+    app: backend
+    component: api
+    tier: backend
+
+spec:
+  replicas: 3 # High availability
+
+  selector:
+    matchLabels:
+      app: backend # Must match template labels
+
+  template:
+    metadata:
+      labels:
+        app: backend # Service selector target
+        version: v1 # Canary deployment support
+
+    spec:
+      containers:
+        - name: backend
+          image: leksonola/humor-game-backend:v1.0.0
+          imagePullPolicy: IfNotPresent
+
+          # Use IfNotPresent unless you're actively developing with a latest tag.
+          # Always forces a registry pull on every restart.
+
+          ports:
+            - containerPort: 3001
+              name: http
+              protocol: TCP
+
+          env:
+            - name: NODE_ENV
+              value: "production"
+
+            - name: PORT
+              value: "3001"
+
+            # Database connection settings
+            - name: DB_HOST
+              value: "postgres-service" # Kubernetes service name
+
+            - name: DB_PORT
+              value: "5432"
+
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: postgres-db
+
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: postgres-user
+
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: postgres-password
+
+          resources:
+            requests: # Scheduler guarantees
+              cpu: "250m" # 0.25 cores
+              memory: "256Mi" # 268MB
+
+            limits: # Kubelet enforces
+              cpu: "500m" # 0.5 cores max
+              memory: "512Mi" # 536MB max (OOM kill threshold)
+
+          livenessProbe: # Deadlock detection
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 30 # Startup grace period
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3 # Restart after 30s of failures
+
+          readinessProbe: # Traffic control
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 10 # Check earlier
+            periodSeconds: 5 # Check frequently
+            timeoutSeconds: 3
+            failureThreshold: 2 # Stop traffic quickly
