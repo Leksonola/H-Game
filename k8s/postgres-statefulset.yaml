@@ -1,0 +1,221 @@
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: postgres
+  namespace: h-game
+  labels:
+    app: postgres
+    component: database
+
+spec:
+  # ============================================
+  # SERVICE NAME (REQUIRED)
+  # ============================================
+  serviceName: postgres-service # Must match Service name
+
+  # Used for:
+  # - DNS: postgres-0.postgres-service
+  # - Network identity
+  # - Service discovery
+
+  replicas: 1 # Single database (no replication yet)
+
+  # Note: Database replication is complex, start with 1
+  # Production: Consider managed DB (RDS, Cloud SQL)
+
+  # ============================================
+  # SELECTOR
+  # ============================================
+  selector:
+    matchLabels:
+      app: postgres # Must match template labels
+
+  # ============================================
+  # POD TEMPLATE
+  # ============================================
+  template:
+    metadata:
+      labels:
+        app: postgres # Service selector target
+        component: database
+
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine # PostgreSQL 15 (lightweight)
+
+          # Alpine = smaller image, faster pulls
+          # 15 = stable, widely supported version
+
+          # ============================================
+          # PORT CONFIGURATION
+          # ============================================
+          ports:
+            - containerPort: 5432 # PostgreSQL default port
+              name: postgres
+              protocol: TCP
+
+          # ============================================
+          # ENVIRONMENT VARIABLES (from Secret)
+          # ============================================
+          env:
+            # PostgreSQL initialization variables
+            # Only used on first start (database creation)
+
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: postgres-user
+
+            # Gets value from Secret:
+            # postgres-secret.data.postgres-user
+            # Decoded automatically by Kubernetes
+
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: postgres-password
+
+            # Superuser password (required)
+
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: postgres-db
+
+            # Database name to create on initialization
+
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+
+            # PostgreSQL data directory
+            # Must be subdirectory of mounted volume
+            # Avoids "lost+found" conflicts on some filesystems
+
+          # ============================================
+          # VOLUME MOUNTS
+          # ============================================
+          volumeMounts:
+            - name: postgres-storage # Matches PVC name in volumeClaimTemplates
+              mountPath: /var/lib/postgresql/data
+
+              # PostgreSQL stores all data here:
+              # - Database files
+              # - WAL logs
+              # - Configuration
+              # This directory is backed by PersistentVolume
+
+          # ============================================
+          # RESOURCE MANAGEMENT
+          # ============================================
+          resources:
+            requests:
+              cpu: "500m" # 0.5 CPU (query processing)
+              memory: "512Mi" # 512MB (working set + buffers)
+
+            limits:
+              cpu: "1000m" # 1 CPU max (peak load)
+              memory: "1Gi" # 1GB max (OOM kill threshold)
+
+          # Database note: Memory limits are critical
+          # Too low = OOM kills = database instability
+          # Too high = wasted resources
+
+          # ============================================
+          # LIVENESS PROBE
+          # ============================================
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U $POSTGRES_USER
+
+            # pg_isready: PostgreSQL health check utility
+            # Returns 0 if server is accepting connections
+            # Returns non-zero if server is down
+
+            initialDelaySeconds: 30 # Wait for PostgreSQL startup
+            periodSeconds: 10 # Check every 10 seconds
+            timeoutSeconds: 5 # Command timeout
+            failureThreshold: 3 # Restart after 3 failures
+
+            # Timeline:
+            # 0:00 - Container starts
+            # 0:30 - First check (PostgreSQL initializing)
+            # 0:40 - Second check (might fail if slow init)
+            # 0:50 - Third check (should pass)
+
+          # ============================================
+          # READINESS PROBE
+          # ============================================
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U $POSTGRES_USER
+
+            # Same check as liveness, different purpose
+            # Liveness: Is DB alive? → Restart if dead
+            # Readiness: Can DB accept connections? → Route traffic if ready
+
+            initialDelaySeconds: 10 # Check sooner
+            periodSeconds: 5 # Check frequently
+            timeoutSeconds: 3 # Faster timeout
+            failureThreshold: 2 # Mark not ready quickly
+
+            # Important: Service won't route traffic until readiness passes
+
+  # ============================================
+  # PERSISTENT VOLUME CLAIM TEMPLATES
+  # ============================================
+  # StatefulSet automatically creates PVC for each Pod
+  # Pod postgres-0 gets PVC postgres-storage-postgres-0
+  # Pod postgres-1 gets PVC postgres-storage-postgres-1
+
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-storage # Template name (used in volumeMounts)
+        labels:
+          app: postgres
+
+      spec:
+        accessModes:
+          - ReadWriteOnce # Single node read/write
+
+        # Modes:
+        # - ReadWriteOnce (RWO): Can be mounted read-write by a single
+        #   node (multiple Pods on that node may share it)
+        # - ReadOnlyMany (ROX): Multiple nodes, read-only
+        # - ReadWriteMany (RWX): Multiple nodes, read-write
+        #   (rare, expensive)
+
+        storageClassName: standard # MicroK8s default storage class
+
+        # StorageClass auto-provisions PersistentVolumes
+        # Other providers: aws-ebs, gce-pd, azure-disk
+
+        resources:
+          requests:
+            storage: 5Gi # Request 5GB storage
+
+        # Database grows over time, provision headroom
+        # Monitor usage:
+        # kubectl exec postgres-0 -- df -h /var/lib/postgresql/data
+
+# ============================================
+# WHAT KUBERNETES CREATES
+# ============================================
+# 1. StatefulSet: postgres
+# 2. Pod: postgres-0 (stable name)
+# 3. PVC: postgres-storage-postgres-0 (auto-created)
+# 4. PV: pvc-abc123 (auto-provisioned by StorageClass)
+#
+# Deletion behavior:
+# - Delete StatefulSet: Deletes Pod, keeps PVC (data preserved)
+# - Delete PVC manually: PV behavior depends on the StorageClass reclaim policy
