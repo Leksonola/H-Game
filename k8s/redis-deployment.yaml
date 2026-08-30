@@ -1,0 +1,82 @@
+# ============================================
+# REDIS DEPLOYMENT
+# ============================================
+# This creates a Redis cache server
+#
+# Key points for beginners:
+# - Deployment (not StatefulSet) because cache data can be rebuilt
+# - No PVC because we don't need to save cache to disk
+# - Single replica because Redis is simple for learning
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: redis
+  namespace: h-game
+  labels:
+    app: redis
+
+spec:
+  replicas: 1 # Just one Redis server
+
+  selector:
+    matchLabels:
+      app: redis # Find Pods with label "app: redis"
+
+  template:
+    metadata:
+      labels:
+        app: redis # Label for this Pod
+
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine # Redis version 7 (small image)
+
+          # Tell Redis to limit memory usage
+          args:
+            - redis-server
+            - --maxmemory
+            - "128mb" # Don't use more than 128MB
+            - --maxmemory-policy
+            - allkeys-lru # When full, delete oldest data
+
+          ports:
+            - containerPort: 6379 # Redis listens on port 6379
+              name: redis
+
+          # How much computer power Redis needs
+          resources:
+            requests:
+              cpu: "100m" # Request 0.1 CPU cores
+              memory: "128Mi" # Request 128 MB RAM
+
+            limits:
+              cpu: "250m" # Maximum 0.25 CPU cores
+              memory: "256Mi" # Maximum 256 MB RAM
+
+          # ============================================
+          # LIVENESS PROBE
+          # ============================================
+          # Health check: Is Redis alive?
+          # Kubernetes runs "redis-cli ping" and expects "PONG"
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          # ============================================
+          # READINESS PROBE
+          # ============================================
+          # Ready check: Can Redis accept connections?
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 5

@@ -6,21 +6,19 @@ metadata:
   namespace: h-game
   labels:
     app: backend
-    component: api
-    tier: backend
 
 spec:
-  replicas: 3 # High availability
+  replicas: 3
 
   selector:
     matchLabels:
-      app: backend # Must match template labels
+      app: backend
 
   template:
     metadata:
       labels:
-        app: backend # Service selector target
-        version: v1 # Canary deployment support
+        app: backend
+        version: v3 # Changed from v2 to v3 (we added Redis)
 
     spec:
       containers:
@@ -28,24 +26,21 @@ spec:
           image: leksonola/humor-game-backend:v1.0.0
           imagePullPolicy: IfNotPresent
 
-          # Use IfNotPresent unless you're actively developing with a latest tag.
-          # Always forces a registry pull on every restart.
-
           ports:
             - containerPort: 3001
               name: http
-              protocol: TCP
 
           env:
+            # Basic settings
             - name: NODE_ENV
               value: "production"
 
             - name: PORT
               value: "3001"
 
-            # Database connection settings
+            # Database connection
             - name: DB_HOST
-              value: "postgres-service" # Kubernetes service name
+              value: "postgres-service"
 
             - name: DB_PORT
               value: "5432"
@@ -68,29 +63,43 @@ spec:
                   name: postgres-secret
                   key: postgres-password
 
+            # ============================================
+            # REDIS CONNECTION
+            # ============================================
+            - name: REDIS_HOST
+              value: "redis-service"
+
+            - name: REDIS_PORT
+              value: "6379"
+
+          # ============================================
+          # RESOURCE MANAGEMENT
+          # ============================================
           resources:
-            requests: # Scheduler guarantees
-              cpu: "250m" # 0.25 cores
-              memory: "256Mi" # 268MB
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
 
-            limits: # Kubelet enforces
-              cpu: "500m" # 0.5 cores max
-              memory: "512Mi" # 536MB max (OOM kill threshold)
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
 
-          livenessProbe: # Deadlock detection
+          # ============================================
+          # LIVENESS PROBE
+          # ============================================
+          livenessProbe:
             httpGet:
               path: /health
               port: 3001
-            initialDelaySeconds: 30 # Startup grace period
+            initialDelaySeconds: 30
             periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3 # Restart after 30s of failures
 
-          readinessProbe: # Traffic control
+          # ============================================
+          # READINESS PROBE
+          # ============================================
+          readinessProbe:
             httpGet:
               path: /health
               port: 3001
-            initialDelaySeconds: 10 # Check earlier
-            periodSeconds: 5 # Check frequently
-            timeoutSeconds: 3
-            failureThreshold: 2 # Stop traffic quickly
+            initialDelaySeconds: 10
+            periodSeconds: 5

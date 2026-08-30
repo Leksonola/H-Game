@@ -1,0 +1,25 @@
+# ============================================
+# REDIS SERVICE
+# ============================================
+# This gives Redis a DNS name that never changes
+# Backend will connect to: redis-service:6379
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: redis-service # This becomes the DNS name!
+  namespace: h-game
+  labels:
+    app: redis
+
+spec:
+  type: ClusterIP # Only accessible inside the cluster
+
+  selector:
+    app: redis # Send traffic to Pods with "app: redis"
+
+  ports:
+    - name: redis
+      port: 6379 # The port to connect to
+      targetPort: 6379 # The port Redis is listening on
