@@ -1,0 +1,85 @@
+# ============================================
+# FRONTEND DEPLOYMENT
+# ============================================
+# This creates Nginx Pods serving the frontend website
+#
+# Key points for beginners:
+# - Deployment (stateless, just serving files)
+# - 3 replicas for redundancy (same as backend)
+# - Nginx serves HTML/CSS/JS files
+# - Port 80 (standard web port)
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: frontend
+  namespace: h-game
+  labels:
+    app: frontend
+    component: web
+
+spec:
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: frontend
+
+  template:
+    metadata:
+      labels:
+        app: frontend
+        component: web
+
+    spec:
+      containers:
+        - name: frontend
+          image: leksonola/humor-game-frontend:v1
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 80
+              name: http
+              protocol: TCP
+
+          # Note:
+          # nginx.conf should proxy /api/ requests to:
+          # backend-service:3001
+          #
+          # This allows Nginx to communicate with the
+          # backend Kubernetes Service.
+
+          # ============================================
+          # RESOURCE MANAGEMENT
+          # ============================================
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+
+          # ============================================
+          # LIVENESS PROBE
+          # ============================================
+          # Health check: Is Nginx serving files?
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          # ============================================
+          # READINESS PROBE
+          # ============================================
+          # Ready check: Can Nginx accept connections?
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5

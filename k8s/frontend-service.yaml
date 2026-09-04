@@ -1,0 +1,32 @@
+# ============================================
+# FRONTEND SERVICE
+# ============================================
+# This gives frontend a DNS name that never changes
+#
+# Users will access: frontend-service:80
+#
+# Note:
+# Because this is ClusterIP, it is only accessible
+# from inside the Kubernetes cluster.
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: frontend-service
+  namespace: h-game
+  labels:
+    app: frontend
+    component: web
+
+spec:
+  type: ClusterIP
+
+  selector:
+    app: frontend
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
